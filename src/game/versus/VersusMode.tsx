@@ -1,11 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FruitMergeGame } from "../FruitMergeGame";
-import { getFruit, getRandomGarbageFruit } from "../fruits";
+import { getFruit, getRandomGarbageFruit, getRandomHeavyGarbageFruit, WATERMELON_LEVEL, type FruitLevel } from "../fruits";
 import { multiplayerAdapter, multiplayerAdapterLabel, multiplayerAdapterStatusReason } from "./multiplayerAdapter";
-import type { PublicBoardState, VersusPlayerState, VersusRoomState, VersusSession } from "./types";
+import type {
+  ActiveAttackState,
+  AttackType,
+  MergeSummary,
+  PublicBoardState,
+  VersusAttackEvent,
+  VersusPlayerState,
+  VersusRoomState,
+  VersusSession
+} from "./types";
 
 const VERSUS_STATS_KEY = "fruit-merge-versus-stats";
 const COUNTDOWN_MS = 3000;
+const ATTACK_METER_MAX = 100;
+const FRENZY_MS = 30000;
 
 interface VersusStats {
   bestScore: number;
@@ -47,6 +58,18 @@ function getOutcomeText(me: VersusPlayerState | null, opponent: VersusPlayerStat
   };
 }
 
+function buildAttackEvent(fromPlayerId: "host" | "guest", type: AttackType, fruitLevel?: FruitLevel, durationMs?: number, strength?: number): VersusAttackEvent {
+  return {
+    id: `${fromPlayerId}-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    type,
+    fromPlayerId,
+    fruitLevel,
+    durationMs,
+    strength,
+    createdAt: Date.now()
+  };
+}
+
 export function VersusMode({ onExit }: { onExit: () => void }) {
   const [playerName, setPlayerName] = useState("Player");
   const [joinCode, setJoinCode] = useState("");
@@ -56,10 +79,13 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
   const [boardState, setBoardState] = useState<PublicBoardState | null>(null);
   const [stats, setStats] = useState(readStats);
   const [now, setNow] = useState(() => Date.now());
+  const [localAttackMeter, setLocalAttackMeter] = useState(0);
+  const [localActiveAttacks, setLocalActiveAttacks] = useState<ActiveAttackState[]>([]);
+  const processedAttackIdsRef = useRef(new Set<string>());
   const outcomeSavedRef = useRef(false);
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    const interval = window.setInterval(() => setNow(Date.now()), 200);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -82,6 +108,17 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     return room.players[otherId] ?? null;
   }, [room, session]);
 
+  useEffect(() => {
+    if (me) {
+      setLocalAttackMeter(me.attackMeter);
+      setLocalActiveAttacks(me.activeAttacks ?? []);
+    }
+  }, [me?.attackMeter, me?.activeAttacks]);
+
+  useEffect(() => {
+    setLocalActiveAttacks((previous) => previous.filter((attack) => attack.endsAt > now));
+  }, [now]);
+
   const incomingAttacks = useMemo(() => {
     if (!room || !session) {
       return [];
@@ -89,6 +126,27 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
 
     return room.events.filter((event) => event.fromPlayerId !== session.playerId);
   }, [room, session]);
+
+  useEffect(() => {
+    if (!session || !room) {
+      return;
+    }
+
+    const freshIncoming = incomingAttacks.filter((event) => !processedAttackIdsRef.current.has(event.id));
+    if (freshIncoming.length === 0) {
+      return;
+    }
+
+    for (const event of freshIncoming) {
+      processedAttackIdsRef.current.add(event.id);
+      if (event.type === "hide-next" || event.type === "gravity-boost") {
+        setLocalActiveAttacks((previous) => [
+          ...previous.filter((attack) => attack.type !== event.type),
+          { type: event.type, endsAt: Date.now() + (event.durationMs ?? 5000) }
+        ]);
+      }
+    }
+  }, [incomingAttacks, room, session]);
 
   const countdownRemainingMs = useMemo(() => {
     if (!room?.countdownStartedAt || room.status !== "countdown") {
@@ -102,11 +160,9 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     if (!room || room.status !== "countdown") {
       return "";
     }
-
     if (countdownRemainingMs <= 0) {
       return "GO!";
     }
-
     return String(Math.ceil(countdownRemainingMs / 1000));
   }, [countdownRemainingMs, room]);
 
@@ -122,6 +178,7 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     return Math.max(0, room.matchDurationMs - (now - room.matchStartedAt));
   }, [now, room]);
 
+  const frenzyActive = room?.status === "playing" && matchRemainingMs <= FRENZY_MS;
   const timerLabel = useMemo(() => formatTimer(matchRemainingMs), [matchRemainingMs]);
 
   useEffect(() => {
@@ -164,6 +221,7 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     const host = room.players.host;
     const guest = room.players.guest;
     if (host?.rematchReady && guest?.rematchReady) {
+      processedAttackIdsRef.current.clear();
       void multiplayerAdapter.resetForRematch(room.roomCode);
     }
   }, [room, session]);
@@ -178,18 +236,27 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
       name: playerName.trim() || "Player",
       score: boardState.score,
       currentFruit: boardState.currentFruit,
-      isGameOver: boardState.isGameOver,
+      biggestFruit: boardState.biggestFruit,
+      totalMerges: boardState.totalMerges,
+      biggestCombo: boardState.biggestCombo,
+      attackMeter: localAttackMeter,
+      activeAttacks: localActiveAttacks,
+      isGameOver: boardState.isGameOver || !gameplayLive,
       connected: true,
       ready: me?.ready ?? false,
       rematchReady: me?.rematchReady ?? false
     });
-
-    if (!gameplayLive && boardState.isGameOver === false && room.status === "finished") {
-      void multiplayerAdapter.updatePlayer(session.roomCode, session.playerId, {
-        isGameOver: true
-      });
-    }
-  }, [boardState, matchRemainingMs, me?.ready, me?.rematchReady, playerName, room, session]);
+  }, [
+    boardState,
+    localActiveAttacks,
+    localAttackMeter,
+    matchRemainingMs,
+    me?.ready,
+    me?.rematchReady,
+    playerName,
+    room,
+    session
+  ]);
 
   useEffect(() => {
     if (!room || !session || room.status !== "finished" || outcomeSavedRef.current) {
@@ -217,12 +284,15 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     if (room?.status !== "finished") {
       outcomeSavedRef.current = false;
     }
+    if (room?.status === "waiting" && room.round > 1) {
+      setLocalAttackMeter(0);
+      setLocalActiveAttacks([]);
+    }
   }, [room?.round, room?.status]);
 
   const createRoom = async () => {
     try {
       setError("");
-      outcomeSavedRef.current = false;
       const nextSession = await multiplayerAdapter.createRoom(playerName.trim() || "Player 1");
       setSession(nextSession);
     } catch (caught) {
@@ -233,7 +303,6 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
   const joinRoom = async () => {
     try {
       setError("");
-      outcomeSavedRef.current = false;
       const nextSession = await multiplayerAdapter.joinRoom(joinCode.trim().toUpperCase(), playerName.trim() || "Player 2");
       setSession(nextSession);
     } catch (caught) {
@@ -249,6 +318,8 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     setSession(null);
     setBoardState(null);
     setJoinCode("");
+    setLocalAttackMeter(0);
+    setLocalActiveAttacks([]);
   };
 
   const toggleReady = async () => {
@@ -269,17 +340,65 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
   };
 
   const handleWatermelon = async () => {
-    if (!session || !room || room.status !== "playing" || matchRemainingMs <= 0) {
+    if (!session || !room || room.status !== "playing") {
       return;
     }
 
-    await multiplayerAdapter.sendAttack(session.roomCode, {
-      id: `${session.playerId}-${Date.now()}`,
-      type: "incoming-fruit",
-      fromPlayerId: session.playerId,
-      fruitLevel: getRandomGarbageFruit(),
-      createdAt: Date.now()
-    });
+    await multiplayerAdapter.sendAttack(
+      session.roomCode,
+      buildAttackEvent(session.playerId, "heavy-junk", getRandomHeavyGarbageFruit())
+    );
+  };
+
+  const sendAttack = async (event: VersusAttackEvent, meterCost: number) => {
+    if (!session || !room || room.status !== "playing") {
+      return;
+    }
+
+    const nextMeter = Math.max(0, localAttackMeter - meterCost);
+    setLocalAttackMeter(nextMeter);
+    await multiplayerAdapter.sendAttack(session.roomCode, event);
+  };
+
+  const manualAttack = async () => {
+    if (!session || localAttackMeter < ATTACK_METER_MAX) {
+      return;
+    }
+
+    const options: VersusAttackEvent[] = [
+      buildAttackEvent(session.playerId, "garbage-fruit", getRandomGarbageFruit()),
+      buildAttackEvent(session.playerId, "board-shake", undefined, 0, 16),
+      buildAttackEvent(session.playerId, "hide-next", undefined, 5000),
+      buildAttackEvent(session.playerId, "gravity-boost", undefined, 5000),
+      buildAttackEvent(session.playerId, "heavy-junk", getRandomHeavyGarbageFruit())
+    ];
+    const chosen = options[Math.floor(Math.random() * options.length)];
+    await sendAttack(chosen, ATTACK_METER_MAX);
+  };
+
+  const handleMergeSummary = async (summary: MergeSummary) => {
+    if (!session || !room || room.status !== "playing") {
+      return;
+    }
+
+    const scoreDeficit = Math.max(0, (opponent?.score ?? 0) - (me?.score ?? boardState?.score ?? 0));
+    const comebackBoost = scoreDeficit > 1200 ? 1.12 : scoreDeficit > 2500 ? 1.18 : 1;
+    const celebration = getFruit(summary.to).celebrationTier;
+    const gainedMeter = Math.min(
+      ATTACK_METER_MAX,
+      localAttackMeter + Math.round((6 + celebration * 3 + Math.max(0, summary.combo - 1) * 4) * comebackBoost)
+    );
+    setLocalAttackMeter(gainedMeter);
+
+    if (summary.to >= WATERMELON_LEVEL) {
+      const strongAttack =
+        summary.to >= 12
+          ? buildAttackEvent(session.playerId, "heavy-junk", getRandomHeavyGarbageFruit())
+          : summary.to >= 10
+            ? buildAttackEvent(session.playerId, "gravity-boost", undefined, 5000)
+            : buildAttackEvent(session.playerId, "garbage-fruit", getRandomGarbageFruit());
+      await multiplayerAdapter.sendAttack(session.roomCode, strongAttack);
+    }
   };
 
   const statusMessage = useMemo(() => {
@@ -295,10 +414,13 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     }
 
     if (room.status === "countdown") {
-      return "Match countdown in progress.";
+      return "Countdown running. Get ready!";
     }
 
     if (room.status === "playing") {
+      if (frenzyActive) {
+        return opponent?.connected === false ? "FRENZY TIME! Opponent disconnected but the match stays open." : "FRENZY TIME! Points are boosted 1.5x.";
+      }
       return opponent?.connected === false ? "Opponent disconnected. Match stays open until time runs out." : "Highest score at 3:00 wins.";
     }
 
@@ -307,7 +429,7 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
     }
 
     return "";
-  }, [me, opponent?.connected, opponent?.ready, room]);
+  }, [frenzyActive, me, opponent?.connected, opponent?.ready, room]);
 
   const outcome = useMemo(() => getOutcomeText(me, opponent), [me, opponent]);
   const isLobby = Boolean(session) && (!!room && (room.status === "waiting" || room.status === "ready"));
@@ -315,6 +437,9 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
   const isPlaying = room?.status === "playing";
   const isFinished = room?.status === "finished";
   const gameplayLocked = !isPlaying || matchRemainingMs <= 0;
+  const attackMeterPercent = Math.min(100, localAttackMeter);
+  const hideNextFruit = localActiveAttacks.some((attack) => attack.type === "hide-next" && attack.endsAt > now);
+  const gravityMultiplier = localActiveAttacks.some((attack) => attack.type === "gravity-boost" && attack.endsAt > now) ? 1.35 : 1;
 
   if (!session) {
     return (
@@ -417,6 +542,7 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
       }}
       onStateChange={setBoardState}
       onWatermelon={handleWatermelon}
+      onMergeSummary={handleMergeSummary}
       incomingAttacks={incomingAttacks}
       compact={false}
       autoStart={isCountdown || isPlaying || isFinished}
@@ -425,7 +551,10 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
       allowPause={false}
       allowRestart={false}
       hideStartOverlay
-      statusPill={<span className="timer-pill">{isPlaying ? timerLabel : isCountdown ? countdownLabel || "3" : "Final"}</span>}
+      frenzyMultiplier={frenzyActive ? 1.5 : 1}
+      hideNextFruit={hideNextFruit}
+      gravityMultiplier={gravityMultiplier}
+      statusPill={<span className={`timer-pill ${frenzyActive ? "frenzy-pill" : ""}`}>{isPlaying ? timerLabel : isCountdown ? countdownLabel || "3" : "Final"}</span>}
       overlayContent={
         <>
           {isCountdown ? (
@@ -433,6 +562,9 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
               <span className="label">Starting</span>
               <strong>{countdownLabel}</strong>
             </div>
+          ) : null}
+          {frenzyActive ? (
+            <div className="frenzy-banner">FRENZY TIME!</div>
           ) : null}
           {isFinished ? (
             <div className="results-overlay">
@@ -447,6 +579,22 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
                 <div>
                   <span className="label">Opponent</span>
                   <strong>{opponent?.score ?? 0}</strong>
+                </div>
+                <div>
+                  <span className="label">Biggest Fruit</span>
+                  <strong>{me ? `${getFruit(me.biggestFruit).emoji} ${getFruit(me.biggestFruit).name}` : "-"}</strong>
+                </div>
+                <div>
+                  <span className="label">Opponent Fruit</span>
+                  <strong>{opponent ? `${getFruit(opponent.biggestFruit).emoji} ${getFruit(opponent.biggestFruit).name}` : "-"}</strong>
+                </div>
+                <div>
+                  <span className="label">Total Merges</span>
+                  <strong>{me?.totalMerges ?? 0}</strong>
+                </div>
+                <div>
+                  <span className="label">Biggest Combo</span>
+                  <strong>{me?.biggestCombo ?? 1}x</strong>
                 </div>
               </div>
               <div className="mode-actions">
@@ -471,19 +619,34 @@ export function VersusMode({ onExit }: { onExit: () => void }) {
             <span>Status: {room.status}</span>
           </div>
           <div className="versus-panel-card">
+            <span className="label">Attack Meter</span>
+            <div className="attack-meter">
+              <div className="attack-meter-fill" style={{ width: `${attackMeterPercent}%` }} />
+            </div>
+            <span>{Math.round(attackMeterPercent)}%</span>
+            <button type="button" disabled={attackMeterPercent < ATTACK_METER_MAX || !isPlaying} onClick={manualAttack}>
+              Send Attack
+            </button>
+          </div>
+          <div className="versus-panel-card">
             <span className="label">You</span>
             <strong>{me?.name ?? playerName}</strong>
             <span>Score: {me?.score ?? boardState?.score ?? 0}</span>
-            <span>{me?.isGameOver ? "Board locked" : isPlaying ? "Playing" : "Waiting"}</span>
+            <span>Biggest: {me ? getFruit(me.biggestFruit).emoji : "🍒"}</span>
+            <span>Combo: {me?.biggestCombo ?? 1}x</span>
           </div>
           <div className="versus-panel-card">
             <span className="label">Opponent</span>
             <strong>{opponent?.name ?? "Waiting..."}</strong>
             <span>Score: {opponent?.score ?? 0}</span>
-            <span>
-              {opponent ? `Current: ${getFruit(opponent.currentFruit).emoji} ${getFruit(opponent.currentFruit).name}` : "Waiting for opponent"}
-            </span>
+            <span>{opponent ? `Current: ${getFruit(opponent.currentFruit).emoji} ${getFruit(opponent.currentFruit).name}` : "Waiting for opponent"}</span>
             <span>{opponent?.connected === false ? "Opponent disconnected" : opponent?.isGameOver ? "Opponent board locked" : "Opponent active"}</span>
+          </div>
+          <div className="versus-panel-card">
+            <span className="label">Live Effects</span>
+            <span>{hideNextFruit ? "Next fruit hidden" : "Next fruit visible"}</span>
+            <span>{gravityMultiplier > 1 ? "Gravity boosted" : "Normal gravity"}</span>
+            <span>{frenzyActive ? "Frenzy scoring active" : "Standard scoring"}</span>
           </div>
           <div className="versus-panel-card">
             <span className="label">Versus Stats</span>

@@ -1,24 +1,37 @@
 import type { FruitLevel } from "../fruits";
 
 export type VersusRoomStatus = "waiting" | "ready" | "countdown" | "playing" | "finished";
+export type AttackType = "garbage-fruit" | "board-shake" | "hide-next" | "gravity-boost" | "heavy-junk";
+
+export interface ActiveAttackState {
+  type: AttackType;
+  endsAt: number;
+}
 
 export interface VersusPlayerState {
   id: "host" | "guest";
   name: string;
   score: number;
   currentFruit: FruitLevel;
+  biggestFruit: FruitLevel;
+  totalMerges: number;
+  biggestCombo: number;
+  attackMeter: number;
   isGameOver: boolean;
   connected: boolean;
   ready: boolean;
   rematchReady: boolean;
+  activeAttacks: ActiveAttackState[];
   lastUpdated: number;
 }
 
 export interface VersusAttackEvent {
   id: string;
-  type: "incoming-fruit";
+  type: AttackType;
   fromPlayerId: "host" | "guest";
-  fruitLevel: FruitLevel;
+  fruitLevel?: FruitLevel;
+  durationMs?: number;
+  strength?: number;
   createdAt: number;
 }
 
@@ -61,6 +74,16 @@ export interface PublicBoardState {
   score: number;
   currentFruit: FruitLevel;
   nextFruit: FruitLevel;
+  biggestFruit: FruitLevel;
+  totalMerges: number;
+  biggestCombo: number;
   isGameOver: boolean;
   isStarted: boolean;
+}
+
+export interface MergeSummary {
+  to: FruitLevel;
+  combo: number;
+  points: number;
+  mergeCount: number;
 }

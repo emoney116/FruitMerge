@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   SMALL_FRUIT_LEVELS,
+  TROPHY_FRUIT_LEVEL,
   WATERMELON_LEVEL,
   getFruit,
   getRandomUpcomingFruit,
@@ -23,7 +24,7 @@ import {
   stepWorld,
   type WorldState
 } from "./physics";
-import type { PublicBoardState, VersusAttackEvent } from "./versus/types";
+import type { MergeSummary, PublicBoardState, VersusAttackEvent } from "./versus/types";
 
 interface Particle {
   id: number;
@@ -72,6 +73,10 @@ export interface FruitMergeGameProps {
   hideStartOverlay?: boolean;
   statusPill?: ReactNode;
   overlayContent?: ReactNode;
+  frenzyMultiplier?: number;
+  hideNextFruit?: boolean;
+  gravityMultiplier?: number;
+  onMergeSummary?: (summary: MergeSummary) => void;
 }
 
 const DEFAULT_BEST_SCORE_KEY = "fruit-merge-best-score";
@@ -86,6 +91,16 @@ function readBestScore(key: string) {
 
   const stored = window.localStorage.getItem(key);
   return stored ? Number.parseInt(stored, 10) || 0 : 0;
+}
+
+function readBestFruit(key: string) {
+  if (typeof window === "undefined") {
+    return 0 as FruitLevel;
+  }
+
+  const stored = window.localStorage.getItem(`${key}-biggest`);
+  const parsed = stored ? Number.parseInt(stored, 10) : 0;
+  return (Number.isFinite(parsed) ? Math.max(0, Math.min(TROPHY_FRUIT_LEVEL, parsed)) : 0) as FruitLevel;
 }
 
 export function FruitMergeGame({
@@ -106,7 +121,11 @@ export function FruitMergeGame({
   allowRestart = true,
   hideStartOverlay = false,
   statusPill,
-  overlayContent
+  overlayContent,
+  frenzyMultiplier = 1,
+  hideNextFruit = false,
+  gravityMultiplier = 1,
+  onMergeSummary
 }: FruitMergeGameProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -126,10 +145,16 @@ export function FruitMergeGame({
   const pendingGarbageRef = useRef<PendingGarbage[]>([]);
   const slowMotionUntilRef = useRef(0);
   const shakeRef = useRef(0);
+  const hideNextUntilRef = useRef(0);
+  const gravityBoostUntilRef = useRef(0);
   const [score, setScore] = useState(0);
   const [bestScore, setBestScore] = useState(() => readBestScore(bestScoreKey));
+  const [bestFruit, setBestFruit] = useState<FruitLevel>(() => readBestFruit(bestScoreKey));
   const [currentFruit, setCurrentFruit] = useState<FruitLevel>(() => getRandomUpcomingFruit());
   const [nextFruit, setNextFruit] = useState<FruitLevel>(() => getRandomUpcomingFruit());
+  const [biggestFruit, setBiggestFruit] = useState<FruitLevel>(0);
+  const [totalMerges, setTotalMerges] = useState(0);
+  const [biggestCombo, setBiggestCombo] = useState(1);
   const [aimX, setAimX] = useState(195);
   const [isStarted, setIsStarted] = useState(autoStart);
   const [isPaused, setIsPaused] = useState(false);
@@ -168,11 +193,16 @@ export function FruitMergeGame({
 
   useEffect(() => {
     setBestScore(readBestScore(bestScoreKey));
+    setBestFruit(readBestFruit(bestScoreKey));
   }, [bestScoreKey]);
 
   useEffect(() => {
     window.localStorage.setItem(bestScoreKey, String(bestScore));
   }, [bestScore, bestScoreKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(`${bestScoreKey}-biggest`, String(bestFruit));
+  }, [bestFruit, bestScoreKey]);
 
   useEffect(() => {
     if (autoStart && !isStarted) {
@@ -189,10 +219,13 @@ export function FruitMergeGame({
       score,
       currentFruit,
       nextFruit,
+      biggestFruit,
+      totalMerges,
+      biggestCombo,
       isGameOver,
       isStarted
     });
-  }, [currentFruit, isGameOver, isStarted, nextFruit, onStateChange, score]);
+  }, [biggestCombo, biggestFruit, currentFruit, isGameOver, isStarted, nextFruit, onStateChange, score, totalMerges]);
 
   useEffect(() => {
     const incoming = incomingAttacks.filter((event) => !processedAttackIdsRef.current.has(event.id));
@@ -203,13 +236,25 @@ export function FruitMergeGame({
     const now = performance.now();
     for (const event of incoming) {
       processedAttackIdsRef.current.add(event.id);
-      pendingGarbageRef.current.push({
-        id: event.id,
-        fruitLevel: event.fruitLevel,
-        executeAt: now + 900
-      });
-      setComboText("Incoming fruit!");
-      pushFloatingText("Incoming fruit!", dimensions.width / 2, dropY + 18, "warning");
+      if (event.type === "garbage-fruit" || event.type === "heavy-junk") {
+        pendingGarbageRef.current.push({
+          id: event.id,
+          fruitLevel: event.fruitLevel ?? 0,
+          executeAt: now + 900
+        });
+        setComboText(event.type === "heavy-junk" ? "Heavy junk incoming!" : "Incoming fruit!");
+        pushFloatingText(event.type === "heavy-junk" ? "Heavy junk!" : "Incoming fruit!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "board-shake") {
+        triggerShake(Math.max(12, event.strength ?? 16));
+        pushFloatingText("Board shake!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "hide-next") {
+        hideNextUntilRef.current = now + (event.durationMs ?? 5000);
+        pushFloatingText("Next fruit hidden!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "gravity-boost") {
+        gravityBoostUntilRef.current = now + (event.durationMs ?? 5000);
+        pushFloatingText("Gravity spike!", dimensions.width / 2, dropY + 18, "warning");
+      }
+
       triggerShake(8);
       playTone(210, 0.08, "sawtooth", 0.06);
     }
@@ -242,6 +287,7 @@ export function FruitMergeGame({
       lastFrameRef.current = now;
       const timeScale = now < slowMotionUntilRef.current ? 0.42 : 1;
       const deltaSeconds = rawDelta * timeScale;
+      worldRef.current.gravity = 1800 * gravityMultiplier * (now < gravityBoostUntilRef.current ? 1.45 : 1);
 
       if (isStarted && !isPaused && !isGameOver) {
         pendingDropRef.current = Math.max(0, pendingDropRef.current - rawDelta);
@@ -305,13 +351,19 @@ export function FruitMergeGame({
 
   const handleMerges = (merges: Array<{ x: number; y: number; from: FruitLevel; to: FruitLevel }>, now: number) => {
     let pointsEarned = 0;
+    let highestMerged: FruitLevel = biggestFruit;
+    let highestComboThisTick = biggestCombo;
 
     for (const merge of merges) {
       const fruit = getFruit(merge.to);
-      pointsEarned += fruit.score;
+      highestMerged = merge.to > highestMerged ? merge.to : highestMerged;
       spawnParticles(merge.x, merge.y, fruit.color, merge.to >= 6 ? 18 : 12, merge.to >= 6 ? 1.35 : 1);
       comboCountRef.current = now < comboExpireRef.current ? comboCountRef.current + 1 : 1;
       comboExpireRef.current = now + COMBO_WINDOW;
+      highestComboThisTick = Math.max(highestComboThisTick, comboCountRef.current);
+      const comboBonusMultiplier = 1 + Math.max(0, comboCountRef.current - 1) * 0.18;
+      const scoredPoints = Math.round(fruit.score * comboBonusMultiplier * frenzyMultiplier);
+      pointsEarned += scoredPoints;
 
       if (comboCountRef.current > 1) {
         const combo = `${comboCountRef.current}x Combo!`;
@@ -321,23 +373,54 @@ export function FruitMergeGame({
         setComboText("");
       }
 
-      pushFloatingText(`+${fruit.score}`, merge.x, merge.y);
+      pushFloatingText(`+${scoredPoints}`, merge.x, merge.y);
       playTone(merge.to >= 5 ? 460 : 320 + merge.to * 28, merge.to >= 6 ? 0.12 : 0.08, "triangle", merge.to >= 6 ? 0.085 : 0.07);
 
-      if (merge.to >= 6) {
-        triggerShake(merge.to >= WATERMELON_LEVEL ? 20 : 10);
+      if (fruit.celebrationTier >= 2) {
+        triggerShake(fruit.celebrationTier >= 4 ? 18 : fruit.celebrationTier >= 3 ? 20 : 10);
       }
 
       if (merge.to === WATERMELON_LEVEL) {
         pointsEarned += triggerWatermelonEvent(merge.x, merge.y);
       }
+      if (merge.to > WATERMELON_LEVEL) {
+        pointsEarned += triggerAscensionEvent(merge.to, merge.x, merge.y);
+      }
+
+      onMergeSummary?.({
+        to: merge.to,
+        combo: comboCountRef.current,
+        points: scoredPoints,
+        mergeCount: merges.length
+      });
     }
 
+    setBiggestFruit((previous) => {
+      const next = highestMerged > previous ? highestMerged : previous;
+      setBestFruit((previousBest) => (next > previousBest ? next : previousBest));
+      return next;
+    });
+    setTotalMerges((previous) => previous + merges.length);
+    setBiggestCombo((previous) => Math.max(previous, highestComboThisTick));
     setScore((previous) => {
       const nextValue = previous + pointsEarned;
       setBestScore((previousBest) => Math.max(previousBest, nextValue));
       return nextValue;
     });
+  };
+
+  const triggerAscensionEvent = (level: FruitLevel, x: number, y: number) => {
+    const fruit = getFruit(level);
+    setWatermelonText(level === TROPHY_FRUIT_LEVEL ? "TROPHY FRUIT!" : `${fruit.name.toUpperCase()}!`);
+    setComboText(level === TROPHY_FRUIT_LEVEL ? "TROPHY FRUIT!" : `${fruit.name.toUpperCase()}!`);
+    slowMotionUntilRef.current = performance.now() + (fruit.celebrationTier >= 5 ? 900 : 700);
+    triggerShake(fruit.celebrationTier >= 5 ? 28 : 18);
+    spawnRainbowBurst(x, y);
+    spawnParticles(x, y, fruit.color, fruit.celebrationTier >= 5 ? 28 : 22, 2.1);
+    playTone(180 + level * 15, 0.18, "sawtooth", 0.12);
+    playTone(240 + level * 20, 0.28, "triangle", 0.08, 0.03);
+    pushFloatingText(level === TROPHY_FRUIT_LEVEL ? "Ultimate Merge!" : `${fruit.name}!`, x, y - 36, "celebration");
+    return Math.round(fruit.score * (level === TROPHY_FRUIT_LEVEL ? 0.8 : 0.35));
   };
 
   const triggerWatermelonEvent = (x: number, y: number) => {
@@ -538,8 +621,13 @@ export function FruitMergeGame({
     pendingDropRef.current = 0;
     slowMotionUntilRef.current = 0;
     shakeRef.current = 0;
+    hideNextUntilRef.current = 0;
+    gravityBoostUntilRef.current = 0;
     lastFrameRef.current = 0;
     setScore(0);
+    setBiggestFruit(0);
+    setTotalMerges(0);
+    setBiggestCombo(1);
     setCurrentFruit(getRandomUpcomingFruit());
     setNextFruit(getRandomUpcomingFruit());
     setAimX(dimensions.width * 0.5);
@@ -776,6 +864,9 @@ export function FruitMergeGame({
 
   const currentDefinition = getFruit(currentFruit);
   const nextDefinition = getFruit(nextFruit);
+  const biggestDefinition = getFruit(biggestFruit);
+  const bestFruitDefinition = getFruit(bestFruit);
+  const nextHidden = hideNextFruit || performance.now() < hideNextUntilRef.current;
 
   return (
     <div className={`page-shell ${compact ? "page-shell-compact" : ""}`}>
@@ -812,7 +903,7 @@ export function FruitMergeGame({
             </div>
             <div>
               <span className="label">Next</span>
-              <strong>{nextDefinition.emoji}</strong>
+              <strong>{nextHidden ? "❔" : nextDefinition.emoji}</strong>
             </div>
           </div>
 
@@ -883,7 +974,19 @@ export function FruitMergeGame({
           <div>
             <span className="label">Next Up</span>
             <div className="fruit-pill">
-              {nextDefinition.emoji} {nextDefinition.name}
+              {nextHidden ? "❔ Hidden" : `${nextDefinition.emoji} ${nextDefinition.name}`}
+            </div>
+          </div>
+          <div>
+            <span className="label">Biggest</span>
+            <div className="fruit-pill">
+              {biggestDefinition.emoji} {biggestDefinition.name}
+            </div>
+          </div>
+          <div>
+            <span className="label">Best Fruit</span>
+            <div className="fruit-pill">
+              {bestFruitDefinition.emoji} {bestFruitDefinition.name}
             </div>
           </div>
           <p>{mode === "versus" ? "Incoming fruit attacks are small but fast." : "Works with touch and mouse. Page scrolling is blocked while you're playing."}</p>

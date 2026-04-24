@@ -1,5 +1,5 @@
 import type { FruitLevel } from "./fruits";
-import { FRUITS } from "./fruits";
+import { FRUITS, MAX_FRUIT_LEVEL } from "./fruits";
 
 export interface Body {
   id: number;
@@ -172,7 +172,7 @@ export function stepWorld(world: WorldState, dt: number, now: number): MergeEven
 
     for (let j = i + 1; j < world.bodies.length; j += 1) {
       const b = world.bodies[j];
-      if (removed.has(b.id) || a.level !== b.level || a.level >= 8) {
+      if (removed.has(b.id) || a.level !== b.level || a.level >= MAX_FRUIT_LEVEL) {
         continue;
       }
 

@@ -2,6 +2,7 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import { getDatabase, onDisconnect, onValue, ref, remove, set, update } from "firebase/database";
 import { getRandomUpcomingFruit, type FruitLevel } from "../fruits";
 import type {
+  ActiveAttackState,
   MultiplayerAdapter,
   VersusAttackEvent,
   VersusPlayerState,
@@ -52,10 +53,15 @@ interface FirebasePlayerRecord {
   name: string;
   score: number;
   currentFruit: FruitLevel;
+  biggestFruit: FruitLevel;
+  totalMerges: number;
+  biggestCombo: number;
+  attackMeter: number;
   ready: boolean;
   rematchReady: boolean;
   gameOver: boolean;
   connected: boolean;
+  activeAttacks?: ActiveAttackState[];
   lastUpdated: number;
 }
 
@@ -108,10 +114,15 @@ function createPlayerState(id: RoomPlayerId, name: string): VersusPlayerState {
     name,
     score: 0,
     currentFruit: getRandomUpcomingFruit(),
+    biggestFruit: 0,
+    totalMerges: 0,
+    biggestCombo: 1,
+    attackMeter: 0,
     isGameOver: false,
     connected: true,
     ready: false,
     rematchReady: false,
+    activeAttacks: [],
     lastUpdated: Date.now()
   };
 }
@@ -138,10 +149,15 @@ function toFirebasePlayer(player: VersusPlayerState): FirebasePlayerRecord {
     name: player.name,
     score: player.score,
     currentFruit: player.currentFruit,
+    biggestFruit: player.biggestFruit,
+    totalMerges: player.totalMerges,
+    biggestCombo: player.biggestCombo,
+    attackMeter: player.attackMeter,
     ready: player.ready,
     rematchReady: player.rematchReady,
     gameOver: player.isGameOver,
     connected: player.connected,
+    activeAttacks: player.activeAttacks,
     lastUpdated: player.lastUpdated
   };
 }
@@ -175,10 +191,15 @@ function fromFirebaseRoom(roomCode: string, record: FirebaseRoomRecord | null): 
       name: source.name,
       score: source.score ?? 0,
       currentFruit: source.currentFruit ?? getRandomUpcomingFruit(),
+      biggestFruit: source.biggestFruit ?? 0,
+      totalMerges: source.totalMerges ?? 0,
+      biggestCombo: source.biggestCombo ?? 1,
+      attackMeter: source.attackMeter ?? 0,
       isGameOver: Boolean(source.gameOver),
       connected: source.connected !== false,
       ready: Boolean(source.ready),
       rematchReady: Boolean(source.rematchReady),
+      activeAttacks: source.activeAttacks ?? [],
       lastUpdated: source.lastUpdated ?? Date.now()
     };
   }
@@ -444,6 +465,7 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
         ...player,
         ready,
         rematchReady: false,
+        activeAttacks: player.activeAttacks,
         lastUpdated: Date.now()
       };
       room.status = deriveLobbyStatus(room);
@@ -461,6 +483,7 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
       room.players[playerId] = {
         ...player,
         rematchReady: ready,
+        activeAttacks: player.activeAttacks,
         lastUpdated: Date.now()
       };
       return room;
@@ -529,9 +552,14 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
           ...player,
           score: 0,
           currentFruit: getRandomUpcomingFruit(),
+          biggestFruit: 0,
+          totalMerges: 0,
+          biggestCombo: 1,
+          attackMeter: 0,
           isGameOver: false,
           ready: false,
           rematchReady: false,
+          activeAttacks: [],
           lastUpdated: Date.now()
         };
       }
@@ -661,6 +689,18 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     if (typeof patch.currentFruit === "number") {
       updates[`players/${playerId}/currentFruit`] = patch.currentFruit;
     }
+    if (typeof patch.biggestFruit === "number") {
+      updates[`players/${playerId}/biggestFruit`] = patch.biggestFruit;
+    }
+    if (typeof patch.totalMerges === "number") {
+      updates[`players/${playerId}/totalMerges`] = patch.totalMerges;
+    }
+    if (typeof patch.biggestCombo === "number") {
+      updates[`players/${playerId}/biggestCombo`] = patch.biggestCombo;
+    }
+    if (typeof patch.attackMeter === "number") {
+      updates[`players/${playerId}/attackMeter`] = patch.attackMeter;
+    }
     if (typeof patch.isGameOver === "boolean") {
       updates[`players/${playerId}/gameOver`] = patch.isGameOver;
     }
@@ -672,6 +712,9 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     }
     if (typeof patch.rematchReady === "boolean") {
       updates[`players/${playerId}/rematchReady`] = patch.rematchReady;
+    }
+    if (Array.isArray(patch.activeAttacks)) {
+      updates[`players/${playerId}/activeAttacks`] = patch.activeAttacks;
     }
 
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), updates);
@@ -784,15 +827,20 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
       if (!player) {
         continue;
       }
-      room.players[playerId] = {
-        ...player,
-        score: 0,
-        currentFruit: getRandomUpcomingFruit(),
-        isGameOver: false,
-        ready: false,
-        rematchReady: false,
-        lastUpdated: Date.now()
-      };
+        room.players[playerId] = {
+          ...player,
+          score: 0,
+          currentFruit: getRandomUpcomingFruit(),
+          biggestFruit: 0,
+          totalMerges: 0,
+          biggestCombo: 1,
+          attackMeter: 0,
+          isGameOver: false,
+          ready: false,
+          rematchReady: false,
+          activeAttacks: [],
+          lastUpdated: Date.now()
+        };
     }
 
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));

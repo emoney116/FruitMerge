@@ -73,9 +73,16 @@ export interface FruitMergeGameProps {
   hideStartOverlay?: boolean;
   statusPill?: ReactNode;
   overlayContent?: ReactNode;
+  simulationPaused?: boolean;
   frenzyMultiplier?: number;
   hideNextFruit?: boolean;
   gravityMultiplier?: number;
+  bounceMultiplier?: number;
+  dropCooldownMultiplier?: number;
+  dangerLineOffset?: number;
+  incomingJunkScaleMultiplier?: number;
+  nextFruitOverride?: { token: number; fruit: FruitLevel } | null;
+  scoreBonusEvent?: { token: number; points: number; label?: string } | null;
   onMergeSummary?: (summary: MergeSummary) => void;
 }
 
@@ -122,9 +129,16 @@ export function FruitMergeGame({
   hideStartOverlay = false,
   statusPill,
   overlayContent,
+  simulationPaused = false,
   frenzyMultiplier = 1,
   hideNextFruit = false,
   gravityMultiplier = 1,
+  bounceMultiplier = 1,
+  dropCooldownMultiplier = 1,
+  dangerLineOffset = 0,
+  incomingJunkScaleMultiplier = 1,
+  nextFruitOverride = null,
+  scoreBonusEvent = null,
   onMergeSummary
 }: FruitMergeGameProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -147,6 +161,9 @@ export function FruitMergeGame({
   const shakeRef = useRef(0);
   const hideNextUntilRef = useRef(0);
   const gravityBoostUntilRef = useRef(0);
+  const stickyCooldownUntilRef = useRef(0);
+  const slipperyUntilRef = useRef(0);
+  const pressureLineUntilRef = useRef(0);
   const [score, setScore] = useState(0);
   const [bestScore, setBestScore] = useState(() => readBestScore(bestScoreKey));
   const [bestFruit, setBestFruit] = useState<FruitLevel>(() => readBestFruit(bestScoreKey));
@@ -169,6 +186,19 @@ export function FruitMergeGame({
   const dangerLine = useMemo(() => Math.max(108, dimensions.height * 0.18), [dimensions.height]);
   const dropY = useMemo(() => Math.max(68, dimensions.height * 0.1), [dimensions.height]);
   const scale = useMemo(() => dimensions.width / 390, [dimensions.width]);
+
+  const getCurrentDangerLine = (time = performance.now()) =>
+    dangerLine + dangerLineOffset + (time < pressureLineUntilRef.current ? 20 : 0);
+
+  const getStackFill = () => {
+    if (worldRef.current.bodies.length === 0) {
+      return 0;
+    }
+
+    const highestPoint = Math.min(...worldRef.current.bodies.map((body) => body.y - body.radius));
+    const usableHeight = Math.max(1, dimensions.height - dropY);
+    return Math.max(0, Math.min(1, (dimensions.height - highestPoint) / usableHeight));
+  };
 
   useEffect(() => {
     const updateSize = () => {
@@ -222,10 +252,33 @@ export function FruitMergeGame({
       biggestFruit,
       totalMerges,
       biggestCombo,
+      stackFill: getStackFill(),
       isGameOver,
       isStarted
     });
   }, [biggestCombo, biggestFruit, currentFruit, isGameOver, isStarted, nextFruit, onStateChange, score, totalMerges]);
+
+  useEffect(() => {
+    if (!nextFruitOverride) {
+      return;
+    }
+
+    setNextFruit(nextFruitOverride.fruit);
+  }, [nextFruitOverride]);
+
+  useEffect(() => {
+    if (!scoreBonusEvent || scoreBonusEvent.points === 0) {
+      return;
+    }
+
+    setScore((previous) => {
+      const nextScore = previous + scoreBonusEvent.points;
+      setBestScore((previousBest) => Math.max(previousBest, nextScore));
+      return nextScore;
+    });
+    pushFloatingText(scoreBonusEvent.label ?? `+${scoreBonusEvent.points}`, dimensions.width / 2, 96, "celebration");
+    playTone(520, 0.09, "triangle", 0.06);
+  }, [scoreBonusEvent]);
 
   useEffect(() => {
     const incoming = incomingAttacks.filter((event) => !processedAttackIdsRef.current.has(event.id));
@@ -253,6 +306,15 @@ export function FruitMergeGame({
       } else if (event.type === "gravity-boost") {
         gravityBoostUntilRef.current = now + (event.durationMs ?? 5000);
         pushFloatingText("Gravity spike!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "sticky-cooldown") {
+        stickyCooldownUntilRef.current = now + (event.durationMs ?? 4500);
+        pushFloatingText("Sticky hands!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "slippery-fruit") {
+        slipperyUntilRef.current = now + (event.durationMs ?? 5000);
+        pushFloatingText("Slippery fruit!", dimensions.width / 2, dropY + 18, "warning");
+      } else if (event.type === "pressure-line") {
+        pressureLineUntilRef.current = now + (event.durationMs ?? 6000);
+        pushFloatingText("Pressure line!", dimensions.width / 2, dropY + 18, "warning");
       }
 
       triggerShake(8);
@@ -288,14 +350,16 @@ export function FruitMergeGame({
       const timeScale = now < slowMotionUntilRef.current ? 0.42 : 1;
       const deltaSeconds = rawDelta * timeScale;
       worldRef.current.gravity = 1800 * gravityMultiplier * (now < gravityBoostUntilRef.current ? 1.45 : 1);
+      worldRef.current.wallBounce = 0.18 * bounceMultiplier * (now < slipperyUntilRef.current ? 1.4 : 1);
+      worldRef.current.floorBounce = 0.08 * bounceMultiplier * (now < slipperyUntilRef.current ? 1.55 : 1);
 
-      if (isStarted && !isPaused && !isGameOver) {
+      if (isStarted && !isPaused && !isGameOver && !simulationPaused) {
         pendingDropRef.current = Math.max(0, pendingDropRef.current - rawDelta);
         const merges = stepWorld(worldRef.current, deltaSeconds, now);
         if (merges.length > 0) {
           handleMerges(merges, now);
         }
-        updateDanger(rawDelta);
+        updateDanger(rawDelta, getCurrentDangerLine(now));
         maybeDropIncomingGarbage(now);
       }
 
@@ -313,12 +377,12 @@ export function FruitMergeGame({
   }, [
     compact,
     currentFruit,
-    dangerLine,
     dimensions.height,
     dimensions.width,
     isGameOver,
     isPaused,
     isStarted,
+    simulationPaused,
     comboText,
     shake,
     scale,
@@ -342,6 +406,7 @@ export function FruitMergeGame({
       const maxX = dimensions.width - fruit.radius * scale - 10;
       const randomX = minX + Math.random() * Math.max(1, maxX - minX);
       const body = createBody(garbage.fruitLevel, randomX, dropY + 8, scale, worldRef.current.nextId++);
+      body.radius *= incomingJunkScaleMultiplier;
       body.vx = (Math.random() - 0.5) * 90;
       addBody(worldRef.current, body);
       playTone(180 + garbage.fruitLevel * 30, 0.07, "square", 0.05);
@@ -455,8 +520,8 @@ export function FruitMergeGame({
     return blastBonus;
   };
 
-  const updateDanger = (deltaSeconds: number) => {
-    const inDanger = worldRef.current.bodies.some((body) => body.y - body.radius < dangerLine && body.vy > -80);
+  const updateDanger = (deltaSeconds: number, currentDangerLine: number) => {
+    const inDanger = worldRef.current.bodies.some((body) => body.y - body.radius < currentDangerLine && body.vy > -80);
 
     if (inDanger) {
       overDangerTimeRef.current += deltaSeconds;
@@ -604,7 +669,10 @@ export function FruitMergeGame({
     const clampedX = Math.max(fruit.radius * scale, Math.min(dimensions.width - fruit.radius * scale, aimX));
     const body = createBody(currentFruit, clampedX, dropY, scale, worldRef.current.nextId++);
     addBody(worldRef.current, body);
-    pendingDropRef.current = 0.35;
+    pendingDropRef.current =
+      0.35 *
+      dropCooldownMultiplier *
+      (performance.now() < stickyCooldownUntilRef.current ? 1.45 : 1);
     setCurrentFruit(nextFruit);
     setNextFruit(getRandomUpcomingFruit());
     playTone(240 + currentFruit * 22, 0.05, "square", 0.05);
@@ -623,6 +691,9 @@ export function FruitMergeGame({
     shakeRef.current = 0;
     hideNextUntilRef.current = 0;
     gravityBoostUntilRef.current = 0;
+    stickyCooldownUntilRef.current = 0;
+    slipperyUntilRef.current = 0;
+    pressureLineUntilRef.current = 0;
     lastFrameRef.current = 0;
     setScore(0);
     setBiggestFruit(0);
@@ -707,6 +778,7 @@ export function FruitMergeGame({
     context.save();
     context.translate(shakeX, shakeY);
 
+    const currentDangerLine = getCurrentDangerLine();
     const background = context.createLinearGradient(0, 0, 0, dimensions.height);
     background.addColorStop(0, compact ? "#fff6e2" : "#fff5df");
     background.addColorStop(1, "#ffe0c9");
@@ -728,13 +800,13 @@ export function FruitMergeGame({
     context.lineWidth = 3;
     context.setLineDash([10, 8]);
     context.beginPath();
-    context.moveTo(18, dangerLine);
-    context.lineTo(dimensions.width - 18, dangerLine);
+    context.moveTo(18, currentDangerLine);
+    context.lineTo(dimensions.width - 18, currentDangerLine);
     context.stroke();
     context.setLineDash([]);
 
     context.fillStyle = "rgba(240, 91, 103, 0.12)";
-    context.fillRect(16, 16, dimensions.width - 32, Math.max(0, dangerLine - 16));
+    context.fillRect(16, 16, dimensions.width - 32, Math.max(0, currentDangerLine - 16));
 
     if (pendingGarbageRef.current.length > 0) {
       context.fillStyle = "rgba(255, 174, 93, 0.18)";
@@ -808,7 +880,7 @@ export function FruitMergeGame({
     context.fillStyle = "rgba(127, 75, 44, 0.8)";
     context.font = "600 13px 'Trebuchet MS', sans-serif";
     context.textAlign = "left";
-    context.fillText("Danger", 20, dangerLine - 10);
+    context.fillText("Danger", 20, currentDangerLine - 10);
 
     context.fillStyle = "rgba(250, 102, 116, 0.2)";
     context.fillRect(18, 22, (dimensions.width - 36) * dangerProgress, 8);

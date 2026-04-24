@@ -1,8 +1,10 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getDatabase, onDisconnect, onValue, ref, remove, set, update } from "firebase/database";
 import { getRandomUpcomingFruit, type FruitLevel } from "../fruits";
+import { getAugmentModifiers, pickAugmentChoices } from "./augments";
 import type {
   ActiveAttackState,
+  AugmentRound,
   MultiplayerAdapter,
   VersusAttackEvent,
   VersusPlayerState,
@@ -62,6 +64,10 @@ interface FirebasePlayerRecord {
   gameOver: boolean;
   connected: boolean;
   activeAttacks?: ActiveAttackState[];
+  selectedAugments?: string[];
+  activeAugments?: string[];
+  shieldCharges?: number;
+  cleanseCharges?: number;
   lastUpdated: number;
 }
 
@@ -73,6 +79,12 @@ interface FirebaseRoomRecord {
   matchDurationMs?: number;
   round?: number;
   hostPlayerId?: RoomPlayerId;
+  currentAugmentRound?: AugmentRound | null;
+  augmentChoices?: Partial<Record<RoomPlayerId, string[]>>;
+  augmentSelections?: Partial<Record<RoomPlayerId, string | null>>;
+  augmentSelectionLocked?: boolean;
+  matchPausedForAugment?: boolean;
+  augmentPauseStartedAt?: number | null;
   players?: Partial<Record<RoomPlayerId, FirebasePlayerRecord>>;
   events?: VersusAttackEvent[] | Record<string, VersusAttackEvent>;
 }
@@ -81,6 +93,7 @@ function debugLog(message: string, ...details: unknown[]) {
   console.log(`[Versus] ${message}`, ...details);
 }
 
+debugLog("Adapter sees import.meta.env", typeof import.meta.env === "object");
 debugLog("Firebase env presence", {
   VITE_FIREBASE_API_KEY: firebaseEnvPresence.VITE_FIREBASE_API_KEY,
   VITE_FIREBASE_AUTH_DOMAIN: firebaseEnvPresence.VITE_FIREBASE_AUTH_DOMAIN,
@@ -108,6 +121,14 @@ function createRoomCode() {
   return Array.from({ length: 5 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
 }
 
+function buildRoundCharges(selectedAugments: string[]) {
+  const modifiers = getAugmentModifiers(selectedAugments);
+  return {
+    shieldCharges: modifiers.shieldChargesPerRound,
+    cleanseCharges: modifiers.cleanseChargesPerRound
+  };
+}
+
 function createPlayerState(id: RoomPlayerId, name: string): VersusPlayerState {
   return {
     id,
@@ -123,6 +144,10 @@ function createPlayerState(id: RoomPlayerId, name: string): VersusPlayerState {
     ready: false,
     rematchReady: false,
     activeAttacks: [],
+    selectedAugments: [],
+    activeAugments: [],
+    shieldCharges: 0,
+    cleanseCharges: 0,
     lastUpdated: Date.now()
   };
 }
@@ -137,6 +162,12 @@ function createRoomState(roomCode: string, hostName: string): VersusRoomState {
     matchStartedAt: null,
     matchDurationMs: MATCH_DURATION_MS,
     round: 1,
+    currentAugmentRound: null,
+    augmentChoices: {},
+    augmentSelections: {},
+    augmentSelectionLocked: false,
+    matchPausedForAugment: false,
+    augmentPauseStartedAt: null,
     players: {
       host: createPlayerState("host", hostName)
     },
@@ -158,6 +189,10 @@ function toFirebasePlayer(player: VersusPlayerState): FirebasePlayerRecord {
     gameOver: player.isGameOver,
     connected: player.connected,
     activeAttacks: player.activeAttacks,
+    selectedAugments: player.selectedAugments,
+    activeAugments: player.activeAugments,
+    shieldCharges: player.shieldCharges,
+    cleanseCharges: player.cleanseCharges,
     lastUpdated: player.lastUpdated
   };
 }
@@ -200,6 +235,10 @@ function fromFirebaseRoom(roomCode: string, record: FirebaseRoomRecord | null): 
       ready: Boolean(source.ready),
       rematchReady: Boolean(source.rematchReady),
       activeAttacks: source.activeAttacks ?? [],
+      selectedAugments: source.selectedAugments ?? [],
+      activeAugments: source.activeAugments ?? source.selectedAugments ?? [],
+      shieldCharges: source.shieldCharges ?? 0,
+      cleanseCharges: source.cleanseCharges ?? 0,
       lastUpdated: source.lastUpdated ?? Date.now()
     };
   }
@@ -217,6 +256,12 @@ function fromFirebaseRoom(roomCode: string, record: FirebaseRoomRecord | null): 
     matchStartedAt: record.matchStartedAt ?? null,
     matchDurationMs: record.matchDurationMs ?? MATCH_DURATION_MS,
     round: record.round ?? 1,
+    currentAugmentRound: record.currentAugmentRound ?? null,
+    augmentChoices: record.augmentChoices ?? {},
+    augmentSelections: record.augmentSelections ?? {},
+    augmentSelectionLocked: Boolean(record.augmentSelectionLocked),
+    matchPausedForAugment: Boolean(record.matchPausedForAugment),
+    augmentPauseStartedAt: record.augmentPauseStartedAt ?? null,
     players,
     events: normalizeEvents(record.events)
   };
@@ -225,6 +270,8 @@ function fromFirebaseRoom(roomCode: string, record: FirebaseRoomRecord | null): 
 function cloneRoom(room: VersusRoomState): VersusRoomState {
   return {
     ...room,
+    augmentChoices: { ...room.augmentChoices },
+    augmentSelections: { ...room.augmentSelections },
     players: { ...room.players },
     events: [...room.events]
   };
@@ -336,9 +383,129 @@ function roomToFirebaseRecord(room: VersusRoomState): FirebaseRoomRecord {
     matchDurationMs: room.matchDurationMs,
     round: room.round,
     hostPlayerId: room.hostPlayerId,
+    currentAugmentRound: room.currentAugmentRound,
+    augmentChoices: room.augmentChoices,
+    augmentSelections: room.augmentSelections,
+    augmentSelectionLocked: room.augmentSelectionLocked,
+    matchPausedForAugment: room.matchPausedForAugment,
+    augmentPauseStartedAt: room.augmentPauseStartedAt,
     players,
     events: room.events
   };
+}
+
+function prepareAugmentRound(room: VersusRoomState, round: AugmentRound) {
+  const { host, guest } = getBothPlayers(room);
+  if (!host || !guest || room.currentAugmentRound || room.augmentSelectionLocked) {
+    return room;
+  }
+
+  room.currentAugmentRound = round;
+  room.augmentSelectionLocked = true;
+  room.matchPausedForAugment = true;
+  room.augmentPauseStartedAt = Date.now();
+  room.augmentSelections = {
+    host: null,
+    guest: null
+  };
+  room.augmentChoices = {
+    host: pickAugmentChoices(host.selectedAugments, 3).map((augment) => augment.id),
+    guest: pickAugmentChoices(guest.selectedAugments, 3).map((augment) => augment.id)
+  };
+  return room;
+}
+
+function applyAugmentSelection(room: VersusRoomState, playerId: RoomPlayerId, augmentId: string) {
+  if (!room.currentAugmentRound || !room.augmentSelectionLocked) {
+    return room;
+  }
+
+  const player = room.players[playerId];
+  const choices = room.augmentChoices[playerId] ?? [];
+  if (!player || !choices.includes(augmentId)) {
+    return room;
+  }
+
+  room.augmentSelections[playerId] = augmentId;
+  const otherPlayerId: RoomPlayerId = playerId === "host" ? "guest" : "host";
+  const otherPick = room.augmentSelections[otherPlayerId];
+  if (!otherPick) {
+    return room;
+  }
+
+  const now = Date.now();
+  for (const currentPlayerId of ROOM_PLAYER_IDS) {
+    const pickedAugmentId = room.augmentSelections[currentPlayerId];
+    const currentPlayer = room.players[currentPlayerId];
+    if (!pickedAugmentId || !currentPlayer) {
+      continue;
+    }
+
+    const nextSelected = currentPlayer.selectedAugments.includes(pickedAugmentId)
+      ? currentPlayer.selectedAugments
+      : [...currentPlayer.selectedAugments, pickedAugmentId];
+    const charges = buildRoundCharges(nextSelected);
+    room.players[currentPlayerId] = {
+      ...currentPlayer,
+      selectedAugments: nextSelected,
+      activeAugments: nextSelected,
+      shieldCharges: charges.shieldCharges,
+      cleanseCharges: charges.cleanseCharges,
+      lastUpdated: now
+    };
+  }
+
+  if (room.matchStartedAt && room.augmentPauseStartedAt) {
+    room.matchStartedAt += now - room.augmentPauseStartedAt;
+  }
+
+  room.currentAugmentRound = null;
+  room.augmentChoices = {};
+  room.augmentSelections = {};
+  room.augmentSelectionLocked = false;
+  room.matchPausedForAugment = false;
+  room.augmentPauseStartedAt = null;
+  return room;
+}
+
+function resetRoomForRematch(room: VersusRoomState) {
+  room.status = "waiting";
+  room.round += 1;
+  room.countdownStartedAt = null;
+  room.matchStartedAt = null;
+  room.currentAugmentRound = null;
+  room.augmentChoices = {};
+  room.augmentSelections = {};
+  room.augmentSelectionLocked = false;
+  room.matchPausedForAugment = false;
+  room.augmentPauseStartedAt = null;
+  room.events = [];
+
+  for (const playerId of ROOM_PLAYER_IDS) {
+    const player = room.players[playerId];
+    if (!player) {
+      continue;
+    }
+
+    room.players[playerId] = {
+      ...player,
+      score: 0,
+      currentFruit: getRandomUpcomingFruit(),
+      biggestFruit: 0,
+      totalMerges: 0,
+      biggestCombo: 1,
+      attackMeter: 0,
+      isGameOver: false,
+      ready: false,
+      rematchReady: false,
+      activeAttacks: [],
+      selectedAugments: [],
+      activeAugments: [],
+      shieldCharges: 0,
+      cleanseCharges: 0,
+      lastUpdated: Date.now()
+    };
+  }
 }
 
 function readLocalRoom(roomCode: string): VersusRoomState | null {
@@ -490,10 +657,27 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
     });
   },
 
+  async openAugmentRound(roomCode, round) {
+    await mutateLocalRoom(normalizeRoomCode(roomCode), (room) => prepareAugmentRound(room, round));
+  },
+
+  async selectAugment(roomCode, playerId, augmentId) {
+    await mutateLocalRoom(normalizeRoomCode(roomCode), (room) => applyAugmentSelection(room, playerId, augmentId));
+  },
+
   async startCountdown(roomCode) {
     await mutateLocalRoom(normalizeRoomCode(roomCode), (room) => {
       const { host, guest } = getBothPlayers(room);
-      if (!host || !guest || !host.ready || !guest.ready || room.status === "countdown" || room.status === "playing") {
+      if (
+        !host ||
+        !guest ||
+        !host.ready ||
+        !guest.ready ||
+        room.currentAugmentRound ||
+        room.augmentSelectionLocked ||
+        room.status === "countdown" ||
+        room.status === "playing"
+      ) {
         return room;
       }
 
@@ -501,6 +685,8 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
       room.countdownStartedAt = Date.now();
       room.matchStartedAt = null;
       room.events = [];
+      room.matchPausedForAugment = false;
+      room.augmentPauseStartedAt = null;
       return room;
     });
   },
@@ -525,6 +711,12 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
       }
 
       room.status = "finished";
+      room.currentAugmentRound = null;
+      room.augmentChoices = {};
+      room.augmentSelections = {};
+      room.augmentSelectionLocked = false;
+      room.matchPausedForAugment = false;
+      room.augmentPauseStartedAt = null;
       return room;
     });
   },
@@ -536,34 +728,7 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
         return room;
       }
 
-      room.status = "waiting";
-      room.round += 1;
-      room.countdownStartedAt = null;
-      room.matchStartedAt = null;
-      room.events = [];
-
-      for (const playerId of ROOM_PLAYER_IDS) {
-        const player = room.players[playerId];
-        if (!player) {
-          continue;
-        }
-
-        room.players[playerId] = {
-          ...player,
-          score: 0,
-          currentFruit: getRandomUpcomingFruit(),
-          biggestFruit: 0,
-          totalMerges: 0,
-          biggestCombo: 1,
-          attackMeter: 0,
-          isGameOver: false,
-          ready: false,
-          rematchReady: false,
-          activeAttacks: [],
-          lastUpdated: Date.now()
-        };
-      }
-
+      resetRoomForRematch(room);
       return room;
     });
   },
@@ -586,6 +751,12 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
       room.status = "waiting";
       room.countdownStartedAt = null;
       room.matchStartedAt = null;
+      room.currentAugmentRound = null;
+      room.augmentChoices = {};
+      room.augmentSelections = {};
+      room.augmentSelectionLocked = false;
+      room.matchPausedForAugment = false;
+      room.augmentPauseStartedAt = null;
       room.events = [];
       for (const remainingId of ROOM_PLAYER_IDS) {
         const player = room.players[remainingId];
@@ -595,7 +766,9 @@ const localMultiplayerAdapter: MultiplayerAdapter = {
         room.players[remainingId] = {
           ...player,
           ready: false,
-          rematchReady: false
+          rematchReady: false,
+          shieldCharges: 0,
+          cleanseCharges: 0
         };
       }
       return room;
@@ -716,6 +889,18 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     if (Array.isArray(patch.activeAttacks)) {
       updates[`players/${playerId}/activeAttacks`] = patch.activeAttacks;
     }
+    if (Array.isArray(patch.selectedAugments)) {
+      updates[`players/${playerId}/selectedAugments`] = patch.selectedAugments;
+    }
+    if (Array.isArray(patch.activeAugments)) {
+      updates[`players/${playerId}/activeAugments`] = patch.activeAugments;
+    }
+    if (typeof patch.shieldCharges === "number") {
+      updates[`players/${playerId}/shieldCharges`] = patch.shieldCharges;
+    }
+    if (typeof patch.cleanseCharges === "number") {
+      updates[`players/${playerId}/cleanseCharges`] = patch.cleanseCharges;
+    }
 
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), updates);
   },
@@ -766,12 +951,46 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
   },
 
+  async openAugmentRound(roomCode, round) {
+    const normalizedCode = normalizeRoomCode(roomCode);
+    const database = requireFirebaseDatabase();
+    const room = firebaseRoomCache.get(normalizedCode) ?? (await readFirebaseRoomOnce(normalizedCode));
+    if (!room) {
+      return;
+    }
+
+    prepareAugmentRound(room, round);
+    await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
+  },
+
+  async selectAugment(roomCode, playerId, augmentId) {
+    const normalizedCode = normalizeRoomCode(roomCode);
+    const database = requireFirebaseDatabase();
+    const room = firebaseRoomCache.get(normalizedCode) ?? (await readFirebaseRoomOnce(normalizedCode));
+    if (!room) {
+      return;
+    }
+
+    applyAugmentSelection(room, playerId, augmentId);
+    await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
+  },
+
   async startCountdown(roomCode) {
     const normalizedCode = normalizeRoomCode(roomCode);
     const database = requireFirebaseDatabase();
     const room = firebaseRoomCache.get(normalizedCode) ?? (await readFirebaseRoomOnce(normalizedCode));
     const { host, guest } = room ? getBothPlayers(room) : { host: null, guest: null };
-    if (!room || !host || !guest || !host.ready || !guest.ready || room.status === "countdown" || room.status === "playing") {
+    if (
+      !room ||
+      !host ||
+      !guest ||
+      !host.ready ||
+      !guest.ready ||
+      room.currentAugmentRound ||
+      room.augmentSelectionLocked ||
+      room.status === "countdown" ||
+      room.status === "playing"
+    ) {
       return;
     }
 
@@ -779,6 +998,8 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     room.countdownStartedAt = Date.now();
     room.matchStartedAt = null;
     room.events = [];
+    room.matchPausedForAugment = false;
+    room.augmentPauseStartedAt = null;
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
   },
 
@@ -804,6 +1025,12 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     }
 
     room.status = "finished";
+    room.currentAugmentRound = null;
+    room.augmentChoices = {};
+    room.augmentSelections = {};
+    room.augmentSelectionLocked = false;
+    room.matchPausedForAugment = false;
+    room.augmentPauseStartedAt = null;
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
   },
 
@@ -816,33 +1043,7 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
       return;
     }
 
-    room.status = "waiting";
-    room.round += 1;
-    room.countdownStartedAt = null;
-    room.matchStartedAt = null;
-    room.events = [];
-
-    for (const playerId of ROOM_PLAYER_IDS) {
-      const player = room.players[playerId];
-      if (!player) {
-        continue;
-      }
-        room.players[playerId] = {
-          ...player,
-          score: 0,
-          currentFruit: getRandomUpcomingFruit(),
-          biggestFruit: 0,
-          totalMerges: 0,
-          biggestCombo: 1,
-          attackMeter: 0,
-          isGameOver: false,
-          ready: false,
-          rematchReady: false,
-          activeAttacks: [],
-          lastUpdated: Date.now()
-        };
-    }
-
+    resetRoomForRematch(room);
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), roomToFirebaseRecord(room));
   },
 
@@ -879,9 +1080,17 @@ const firebaseMultiplayerAdapter: MultiplayerAdapter = {
     updates.status = "waiting";
     updates.countdownStartedAt = null;
     updates.matchStartedAt = null;
+    updates.currentAugmentRound = null;
+    updates.augmentChoices = {};
+    updates.augmentSelections = {};
+    updates.augmentSelectionLocked = false;
+    updates.matchPausedForAugment = false;
+    updates.augmentPauseStartedAt = null;
     updates.events = [];
     updates[`players/${otherPlayerId}/ready`] = false;
     updates[`players/${otherPlayerId}/rematchReady`] = false;
+    updates[`players/${otherPlayerId}/shieldCharges`] = 0;
+    updates[`players/${otherPlayerId}/cleanseCharges`] = 0;
     await update(ref(database, getFirebaseRoomPath(normalizedCode)), updates);
   },
 

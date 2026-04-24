@@ -1,7 +1,17 @@
 import type { FruitLevel } from "../fruits";
 
 export type VersusRoomStatus = "waiting" | "ready" | "countdown" | "playing" | "finished";
-export type AttackType = "garbage-fruit" | "board-shake" | "hide-next" | "gravity-boost" | "heavy-junk";
+export type AttackType =
+  | "garbage-fruit"
+  | "board-shake"
+  | "hide-next"
+  | "gravity-boost"
+  | "heavy-junk"
+  | "sticky-cooldown"
+  | "slippery-fruit"
+  | "pressure-line";
+export type AugmentRound = "pregame" | "twoMinute" | "oneMinute";
+export type AugmentCategory = "Buff" | "Attack" | "Economy" | "Chaos" | "Defense";
 
 export interface ActiveAttackState {
   type: AttackType;
@@ -22,6 +32,10 @@ export interface VersusPlayerState {
   ready: boolean;
   rematchReady: boolean;
   activeAttacks: ActiveAttackState[];
+  selectedAugments: string[];
+  activeAugments: string[];
+  shieldCharges: number;
+  cleanseCharges: number;
   lastUpdated: number;
 }
 
@@ -44,6 +58,12 @@ export interface VersusRoomState {
   matchStartedAt: number | null;
   matchDurationMs: number;
   round: number;
+  currentAugmentRound: AugmentRound | null;
+  augmentChoices: Partial<Record<"host" | "guest", string[]>>;
+  augmentSelections: Partial<Record<"host" | "guest", string | null>>;
+  augmentSelectionLocked: boolean;
+  matchPausedForAugment: boolean;
+  augmentPauseStartedAt: number | null;
   players: Partial<Record<"host" | "guest", VersusPlayerState>>;
   events: VersusAttackEvent[];
 }
@@ -61,6 +81,8 @@ export interface MultiplayerAdapter {
   updatePlayer(roomCode: string, playerId: "host" | "guest", patch: Partial<VersusPlayerState>): Promise<void>;
   setPlayerReady(roomCode: string, playerId: "host" | "guest", ready: boolean): Promise<void>;
   setPlayerRematchReady(roomCode: string, playerId: "host" | "guest", ready: boolean): Promise<void>;
+  openAugmentRound(roomCode: string, round: AugmentRound): Promise<void>;
+  selectAugment(roomCode: string, playerId: "host" | "guest", augmentId: string): Promise<void>;
   startCountdown(roomCode: string): Promise<void>;
   startMatch(roomCode: string): Promise<void>;
   finishMatch(roomCode: string): Promise<void>;
@@ -77,6 +99,7 @@ export interface PublicBoardState {
   biggestFruit: FruitLevel;
   totalMerges: number;
   biggestCombo: number;
+  stackFill: number;
   isGameOver: boolean;
   isStarted: boolean;
 }

@@ -78,6 +78,7 @@ export interface FruitMergeGameProps {
   hideNextFruit?: boolean;
   gravityMultiplier?: number;
   bounceMultiplier?: number;
+  spawnDriftMultiplier?: number;
   dropCooldownMultiplier?: number;
   dangerLineOffset?: number;
   incomingJunkScaleMultiplier?: number;
@@ -134,6 +135,7 @@ export function FruitMergeGame({
   hideNextFruit = false,
   gravityMultiplier = 1,
   bounceMultiplier = 1,
+  spawnDriftMultiplier = 1,
   dropCooldownMultiplier = 1,
   dangerLineOffset = 0,
   incomingJunkScaleMultiplier = 1,
@@ -407,7 +409,7 @@ export function FruitMergeGame({
       const randomX = minX + Math.random() * Math.max(1, maxX - minX);
       const body = createBody(garbage.fruitLevel, randomX, dropY + 8, scale, worldRef.current.nextId++);
       body.radius *= incomingJunkScaleMultiplier;
-      body.vx = (Math.random() - 0.5) * 90;
+      body.vx = (Math.random() - 0.5) * 90 * spawnDriftMultiplier;
       addBody(worldRef.current, body);
       playTone(180 + garbage.fruitLevel * 30, 0.07, "square", 0.05);
       spawnParticles(randomX, dropY + 18, fruit.color, 14, 1.2);
@@ -668,6 +670,7 @@ export function FruitMergeGame({
     const fruit = getFruit(currentFruit);
     const clampedX = Math.max(fruit.radius * scale, Math.min(dimensions.width - fruit.radius * scale, aimX));
     const body = createBody(currentFruit, clampedX, dropY, scale, worldRef.current.nextId++);
+    body.vx = (Math.random() - 0.5) * 32 * spawnDriftMultiplier;
     addBody(worldRef.current, body);
     pendingDropRef.current =
       0.35 *

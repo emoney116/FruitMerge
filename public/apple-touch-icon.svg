@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-label="Fruit Merge">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff6dc"/>
+      <stop offset="100%" stop-color="#ffb894"/>
+    </linearGradient>
+    <linearGradient id="fruitA" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff758f"/>
+      <stop offset="100%" stop-color="#ff546c"/>
+    </linearGradient>
+    <linearGradient id="fruitB" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9be98d"/>
+      <stop offset="100%" stop-color="#36b66f"/>
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" rx="48" fill="url(#bg)"/>
+  <circle cx="70" cy="72" r="34" fill="url(#fruitA)"/>
+  <circle cx="110" cy="110" r="42" fill="url(#fruitB)"/>
+  <circle cx="58" cy="58" r="8" fill="#ffffff" opacity="0.72"/>
+  <circle cx="98" cy="92" r="10" fill="#ffffff" opacity="0.52"/>
+  <path d="M67 33c11-18 31-15 39-7-14 2-23 8-30 20z" fill="#66aa4f"/>
+  <path d="M103 63c21-8 32 6 31 21-13-2-23-4-38 4z" fill="#2f7b54"/>
+</svg>

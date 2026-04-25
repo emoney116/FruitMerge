@@ -230,6 +230,35 @@ input {
   -webkit-user-select: none;
 }
 
+.floating-stage-action {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+}
+
+.attack-fab {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 62px;
+  padding: 0.8rem 0.65rem;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #ff8f6c 0%, #ff5d7c 100%);
+}
+
+.attack-fab span {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.attack-fab small {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: rgba(255, 249, 244, 0.96);
+}
+
 .game-canvas {
   display: block;
   width: 100%;
@@ -639,6 +668,10 @@ input {
     grid-column: 3;
     position: sticky;
     top: 18px;
+  }
+
+  .floating-stage-action {
+    right: -16px;
   }
 
   .mode-grid,

@@ -64,6 +64,7 @@ export interface FruitMergeGameProps {
   onWatermelon?: () => void;
   incomingAttacks?: VersusAttackEvent[];
   sidebar?: ReactNode;
+  floatingAction?: ReactNode;
   compact?: boolean;
   autoStart?: boolean;
   gameplayLocked?: boolean;
@@ -121,6 +122,7 @@ export function FruitMergeGame({
   onWatermelon,
   incomingAttacks = [],
   sidebar,
+  floatingAction,
   compact = false,
   autoStart = false,
   gameplayLocked = false,
@@ -1037,6 +1039,8 @@ export function FruitMergeGame({
           )}
 
           {overlayContent}
+
+          {floatingAction ? <div className="floating-stage-action">{floatingAction}</div> : null}
         </div>
 
         <section className="footer-card">

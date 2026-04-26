@@ -132,6 +132,15 @@ input {
   animation: float-in 450ms ease-out;
 }
 
+.hero-panel-compact {
+  padding: 12px 14px;
+}
+
+.hero-panel-compact h1 {
+  margin: 6px 0 0;
+  font-size: 1.2rem;
+}
+
 .hero-topline,
 .versus-header,
 .versus-header-actions {
@@ -230,6 +239,52 @@ input {
   -webkit-user-select: none;
 }
 
+.stage-hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 84px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stage-pill,
+.overlay-chip {
+  border-radius: 18px;
+  background: rgba(255, 249, 244, 0.78);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  padding: 0.5rem 0.55rem;
+  box-shadow: 0 10px 24px rgba(123, 72, 53, 0.12);
+}
+
+.stage-pill strong,
+.overlay-chip strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1rem;
+}
+
+.stage-overlay-shell {
+  position: absolute;
+  left: 10px;
+  right: 84px;
+  bottom: 12px;
+  z-index: 3;
+}
+
+.versus-overlay-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.overlay-chip-wide {
+  grid-column: span 1;
+}
+
 .floating-stage-action {
   position: absolute;
   right: 10px;
@@ -257,6 +312,10 @@ input {
   font-size: 0.72rem;
   font-weight: 800;
   color: rgba(255, 249, 244, 0.96);
+}
+
+.game-layout-single-screen {
+  gap: 10px;
 }
 
 .game-canvas {
@@ -337,6 +396,10 @@ input {
 .versus-sidebar {
   display: grid;
   gap: 12px;
+}
+
+.versus-sidebar-hidden {
+  display: none;
 }
 
 .versus-panel {
@@ -527,6 +590,8 @@ input {
   text-align: left;
   border-radius: 22px;
   padding: 1rem;
+  background: linear-gradient(180deg, rgba(255, 154, 120, 0.95) 0%, rgba(255, 96, 128, 0.95) 100%);
+  box-shadow: 0 12px 24px rgba(255, 96, 128, 0.22);
 }
 
 .augment-icon {
@@ -649,6 +714,11 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .game-layout-single-screen {
+    max-width: 520px;
+    grid-template-columns: 1fr;
+  }
+
   .hero-panel {
     position: sticky;
     top: 18px;
@@ -672,6 +742,10 @@ input {
 
   .floating-stage-action {
     right: -16px;
+  }
+
+  .stage-overlay-shell {
+    right: 110px;
   }
 
   .mode-grid,

@@ -65,6 +65,7 @@ export interface FruitMergeGameProps {
   incomingAttacks?: VersusAttackEvent[];
   sidebar?: ReactNode;
   floatingAction?: ReactNode;
+  hudOverlay?: ReactNode;
   compact?: boolean;
   autoStart?: boolean;
   gameplayLocked?: boolean;
@@ -72,6 +73,8 @@ export interface FruitMergeGameProps {
   allowPause?: boolean;
   allowRestart?: boolean;
   hideStartOverlay?: boolean;
+  singleScreen?: boolean;
+  showControlButtons?: boolean;
   statusPill?: ReactNode;
   overlayContent?: ReactNode;
   simulationPaused?: boolean;
@@ -123,6 +126,7 @@ export function FruitMergeGame({
   incomingAttacks = [],
   sidebar,
   floatingAction,
+  hudOverlay,
   compact = false,
   autoStart = false,
   gameplayLocked = false,
@@ -130,6 +134,8 @@ export function FruitMergeGame({
   allowPause = true,
   allowRestart = true,
   hideStartOverlay = false,
+  singleScreen = false,
+  showControlButtons = true,
   statusPill,
   overlayContent,
   simulationPaused = false,
@@ -949,8 +955,8 @@ export function FruitMergeGame({
     <div className={`page-shell ${compact ? "page-shell-compact" : ""}`}>
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
-      <main className={`game-layout ${compact ? "game-layout-compact" : ""}`}>
-        <section className="hero-panel">
+      <main className={`game-layout ${compact ? "game-layout-compact" : ""} ${singleScreen ? "game-layout-single-screen" : ""}`}>
+        <section className={`hero-panel ${singleScreen ? "hero-panel-compact" : ""}`}>
           <div className="hero-topline">
             <span className="badge">{mode === "versus" ? "Versus Board" : "Solo Mode"}</span>
             {statusPill}
@@ -961,9 +967,10 @@ export function FruitMergeGame({
             ) : null}
           </div>
           <h1>{title}</h1>
-          <p>{subtitle}</p>
+          {!singleScreen ? <p>{subtitle}</p> : null}
         </section>
 
+        {!singleScreen ? (
         <section className="hud-card">
           <div className="score-grid">
             <div>
@@ -984,6 +991,7 @@ export function FruitMergeGame({
             </div>
           </div>
 
+          {showControlButtons ? (
           <div className="controls-row">
             <button
               type="button"
@@ -999,12 +1007,14 @@ export function FruitMergeGame({
               {isMuted ? "Unmute" : "Mute"}
             </button>
           </div>
+          ) : null}
 
           <div className="status-strip">
             <span>{watermelonText ? "Watermelon event active" : "Match fruit to evolve them."}</span>
             <span>{pendingGarbageRef.current.length > 0 ? "Incoming fruit queued" : "Board stable"}</span>
           </div>
         </section>
+        ) : null}
 
         <div
           ref={stageRef}
@@ -1015,6 +1025,29 @@ export function FruitMergeGame({
           onPointerCancel={handlePointerUp}
         >
           <canvas ref={canvasRef} className="game-canvas" />
+
+          {singleScreen ? (
+            <div className="stage-hud">
+              <div className="stage-pill">
+                <span className="label">Score</span>
+                <strong>{score}</strong>
+              </div>
+              <div className="stage-pill">
+                <span className="label">Best</span>
+                <strong>{bestScore}</strong>
+              </div>
+              <div className="stage-pill">
+                <span className="label">Now</span>
+                <strong>{currentDefinition.emoji}</strong>
+              </div>
+              <div className="stage-pill">
+                <span className="label">Next</span>
+                <strong>{nextHidden ? "?" : nextDefinition.emoji}</strong>
+              </div>
+            </div>
+          ) : null}
+
+          {hudOverlay ? <div className="stage-overlay-shell">{hudOverlay}</div> : null}
 
           {!hideStartOverlay && !isStarted && (
             <div className="overlay-card">
@@ -1043,6 +1076,7 @@ export function FruitMergeGame({
           {floatingAction ? <div className="floating-stage-action">{floatingAction}</div> : null}
         </div>
 
+        {!singleScreen ? (
         <section className="footer-card">
           <div>
             <span className="label">Preview</span>
@@ -1070,8 +1104,9 @@ export function FruitMergeGame({
           </div>
           <p>{mode === "versus" ? "Incoming fruit attacks are small but fast." : "Works with touch and mouse. Page scrolling is blocked while you're playing."}</p>
         </section>
+        ) : null}
 
-        {sidebar ? <aside className="versus-sidebar">{sidebar}</aside> : null}
+        {sidebar ? <aside className={`versus-sidebar ${singleScreen ? "versus-sidebar-hidden" : ""}`}>{sidebar}</aside> : null}
       </main>
     </div>
   );
